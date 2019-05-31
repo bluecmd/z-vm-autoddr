@@ -1,0 +1,228 @@
+#!/usr/bin/python3
+# Utility to create s3270 script to dump all disks using z/VM RAMDISK
+#
+# -- Example config for hercules --
+# [...]
+# 0A99 3390 zos21/S1IMC1.64 ro cu=3990-6 # DUMP: S1IMC1
+# 0A9A 3390 zos21/S1IMD1.64 ro cu=3990-6 # DUMP: S1IMD1
+# 0A9B 3390 zos21/S1DIS1.64 ro cu=3990-6 # DUMP: S1DIS1
+# [...]
+# 0200 9336 zv2r1.hba
+# -- End config --
+#
+# Execute as: ./autoddr localhost:3270 zvm.conf ZV2R1 | s3270
+
+import sys
+
+if len(sys.argv) < 4:
+    print('Usage: {prog} [3270 addr] [hercules conf] [volid]'.format(prog=sys.argv[0]))
+    sys.exit(1)
+
+_, addr, hercconf, volid = sys.argv
+
+if len(volid) > 6:
+    print('Volid must be less than 7 characters')
+    sys.exit(1)
+
+# Fetch disks from config file
+dasds = []
+for row in open(hercconf):
+    if 'DUMP: ' not in row:
+        continue
+    addr, _ = row.split(' ', maxsplit=1)
+    _, name = row.strip().rsplit(' ', maxsplit=1)
+    dasds.append((addr, name))
+
+print('''
+Connect({addr})
+Ascii()
+
+# Wait for boot
+Wait(InputField)
+Wait(3, Seconds)
+Clear()
+Snap(Wait,Output)
+Clear()
+Snap(Wait,Output)
+Snap(Ascii)
+
+# Init
+Wait(InputField)
+String("attach 200 *")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("format 200 t (noerase")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("1")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("{volid}")
+Enter()
+Snap(Wait,Output)
+
+# Create DDR DUMP script
+String("xedit dump ddr a")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("i")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("input 800 dasd")
+Tab()
+String("output pipe ( lz")
+Tab()
+String("prompts off")
+Tab()
+String("dump all")
+Enter()
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("file")
+Ascii()
+Enter()
+Snap(Wait,Output)
+
+# Create DDR RESTORE script
+String("xedit restore ddr t")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("i")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("input pipe ( lz")
+Tab()
+String("output 800 dasd")
+Tab()
+String("prompts off")
+Tab()
+String("restore all")
+Enter()
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("file")
+Ascii()
+Enter()
+Snap(Wait,Output)
+
+# Create LISTING script
+String("xedit listing exec a")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("i")
+Enter()
+Snap(Wait,Output)
+String("/* REXX */")
+Enter()
+Ascii()
+''')
+
+for addr, dasd in dasds:
+    print('''# DASD {addr} {dasd}
+String("'PIPE QUERY DASD {addr} DETAILS | LOCATE /VOLSER/ | >> DASD LIST T'")
+Enter()
+'''.format(addr=addr, dasd=dasd))
+
+print('''
+# Save script
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("file")
+Snap(Wait,Output)
+
+# Create RESTORE script
+String("xedit restore exec t")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("i")
+Enter()
+Snap(Wait,Output)
+String("/* REXX */")
+Enter()
+String("'DRPC MODULE'")
+Enter()
+Ascii()
+''')
+
+for addr, dasd in dasds:
+    print('''# DASD {addr} {dasd}
+String("'ATTACH {addr} * 800'")
+Enter()
+String("'PIPE < {addr} {dasd} T | DDR RESTORE DDR T'")
+Enter()
+String("'DETACH 800'")
+Enter()
+'''.format(addr=addr, dasd=dasd))
+
+print('''
+# Save script
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("file")
+Snap(Wait,Output)
+
+# Create DUMP script
+String("xedit dump exec a")
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("i")
+Enter()
+Snap(Wait,Output)
+String("/* REXX */")
+Enter()
+String("'DRPC MODULE'")
+Enter()
+Ascii()
+'''.format(addr=addr, volid=volid))
+
+for addr, dasd in dasds:
+    print('''# DASD {addr} {dasd}
+String("'ATTACH {addr} * 800'")
+Enter()
+String("'PIPE DDR DUMP DDR A | > {addr} {dasd} T'")
+Enter()
+String("'DETACH 800'")
+Enter()
+'''.format(addr=addr, dasd=dasd))
+
+print('''
+String("'SHUTDOWN SYSTEM IBMVMRAM'")
+Enter()
+
+# Save script
+Enter()
+Snap(Wait,Output)
+Wait(InputField)
+String("file")
+Ascii()
+Enter()
+Snap(Wait,Output)
+
+# Execute listing creator
+Wait(InputField)
+String("EXEC LISTING")
+Enter()
+Snap(Wait,Output)
+Ascii()
+
+# Execute dumper
+Wait(InputField)
+String("EXEC DUMP")
+Enter()
+Snap(Wait,Output)
+Ascii()
+''')
