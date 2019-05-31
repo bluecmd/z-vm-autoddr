@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# Utility to create s3270 script to dump all disks using z/VM RAMDISK
+# Utility script x3270 to dump all disks using z/VM RAMDISK
 #
 # -- Example config for hercules --
 # [...]
@@ -10,31 +10,51 @@
 # 0200 9336 zv2r1.hba
 # -- End config --
 #
-# Execute as: ./autoddr localhost:3270 zvm.conf ZV2R1 | s3270
+# Execute as:
+#  - c3270 -scriptport 4081 localhost:3270
+#  - ./autoddr --volid ZV2R1 zvm.conf
 
+import argparse
+import os
+import socket
 import sys
 
-if len(sys.argv) < 4:
-    print('Usage: {prog} [3270 addr] [hercules conf] [volid]'.format(prog=sys.argv[0]))
+parser = argparse.ArgumentParser()
+parser.add_argument("hercules_config", help="Hercules configuration file to parse")
+parser.add_argument("--volid", help="Volume ID to format the disk with")
+parser.add_argument("--noformat", help="Do not format the disk", action="store_true")
+parser.add_argument("--address", help="Address to the c3270/x3270 script port", default="127.0.0.1:4081")
+args = parser.parse_args()
+
+do_format = not args.noformat
+
+if do_format and args.volid is None:
+    print('Volid must be specified if formatting the disk')
     sys.exit(1)
 
-_, addr, hercconf, volid = sys.argv
-
-if len(volid) > 6:
+if do_format and len(args.volid) > 6:
     print('Volid must be less than 7 characters')
     sys.exit(1)
 
+mount = 'format 200 t (noerase' if do_format else 'access 200 t'
+
 # Fetch disks from config file
 dasds = []
-for row in open(hercconf):
+for row in open(args.hercules_config):
     if 'DUMP: ' not in row:
         continue
     addr, _ = row.split(' ', maxsplit=1)
     _, name = row.strip().rsplit(' ', maxsplit=1)
     dasds.append((addr, name))
 
-print('''
-Connect({addr})
+x3270input = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+host, port = args.address.rsplit(':', maxsplit=1)
+x3270input.connect((host, int(port)))
+
+def script_print(*args):
+    x3270input.send(bytes(' '.join(args) + '\n', 'utf-8'))
+
+script_print('''
 Ascii()
 
 # Wait for boot
@@ -52,7 +72,7 @@ String("attach 200 *")
 Enter()
 Snap(Wait,Output)
 Wait(InputField)
-String("format 200 t (noerase")
+String("{mount}")
 Enter()
 Snap(Wait,Output)
 Wait(InputField)
@@ -90,6 +110,8 @@ Enter()
 Snap(Wait,Output)
 
 # Create DDR RESTORE script
+String("erase restore ddr t")
+Enter()
 String("xedit restore ddr t")
 Enter()
 Snap(Wait,Output)
@@ -124,21 +146,25 @@ Enter()
 Snap(Wait,Output)
 String("/* REXX */")
 Enter()
+String("'ERASE DASD LIST T'")
+Enter()
 Ascii()
-''')
+'''.format(volid=args.volid, mount=mount))
 
 for addr, dasd in dasds:
-    print('''# DASD {addr} {dasd}
-String("'PIPE QUERY DASD {addr} DETAILS | LOCATE /VOLSER/ | >> DASD LIST T'")
+    script_print('''# DASD {addr} {dasd}
+String("'PIPE CP Q DASD DETAILS {addr} | LOCATE /VOLSER/ | >> DASD LIST T'")
 Enter()
 '''.format(addr=addr, dasd=dasd))
 
-print('''
+script_print('''
 # Save script
 Enter()
 Snap(Wait,Output)
 Wait(InputField)
 String("file")
+Ascii()
+Enter()
 Snap(Wait,Output)
 
 # Create RESTORE script
@@ -157,7 +183,7 @@ Ascii()
 ''')
 
 for addr, dasd in dasds:
-    print('''# DASD {addr} {dasd}
+    script_print('''# DASD {addr} {dasd}
 String("'ATTACH {addr} * 800'")
 Enter()
 String("'PIPE < {addr} {dasd} T | DDR RESTORE DDR T'")
@@ -166,12 +192,14 @@ String("'DETACH 800'")
 Enter()
 '''.format(addr=addr, dasd=dasd))
 
-print('''
+script_print('''
 # Save script
 Enter()
 Snap(Wait,Output)
 Wait(InputField)
 String("file")
+Ascii()
+Enter()
 Snap(Wait,Output)
 
 # Create DUMP script
@@ -187,10 +215,10 @@ Enter()
 String("'DRPC MODULE'")
 Enter()
 Ascii()
-'''.format(addr=addr, volid=volid))
+''')
 
 for addr, dasd in dasds:
-    print('''# DASD {addr} {dasd}
+    script_print('''# DASD {addr} {dasd}
 String("'ATTACH {addr} * 800'")
 Enter()
 String("'PIPE DDR DUMP DDR A | > {addr} {dasd} T'")
@@ -199,7 +227,7 @@ String("'DETACH 800'")
 Enter()
 '''.format(addr=addr, dasd=dasd))
 
-print('''
+script_print('''
 String("'SHUTDOWN SYSTEM IBMVMRAM'")
 Enter()
 

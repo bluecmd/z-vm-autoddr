@@ -27,12 +27,21 @@ and so on.
 
 ## Usage
 
-The script uses s3270, part of the x3270 suite to automate command
+The script uses x3270-script, part of the x3270 suite to automate command
 input to an IPLed z/VM RAMDISK. Simply connect the script to an IPL'd
 z/VM RAMDISK and it will take it from there. The system will shut down
 after the dump has completed.
 
 ```
 # After IPL of z/VM RAMDISK
-./autoddr localhost:3270 zvm.conf ZV2R1 | s3270
+c3270 -scriptport 4081 localhost:3270
+./autoddr --volid ZV2R1 zvm.conf
+```
+
+To restore:
+
+```
+attach 200 *
+access 200 t
+exec restore
 ```
